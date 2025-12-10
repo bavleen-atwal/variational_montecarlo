@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+unienv/
+.venv/
+venv/
+.env
+
+# Notebooks & temp
+.ipynb_checkpoints/
+
+# Data
+*.fits
+*.fit
+*.fz
+data/
+outputs/
+cache/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
