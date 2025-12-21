@@ -52,7 +52,19 @@ def metropolis_3d(psi, x0, rho, nsteps, stepsize,nburn, seed  = None):
     acceptance_rate = accepted / nsteps
     return accepted_x, np.array(full_x), acceptance_rate, np.array(r_trace)  
 
-
+def laplacian_central(psi, v, rho, h):
+    """Laplacian of wavefunction using central difference"""
+    v = np.asarray(v, dtype=float)
+    psi0= psi(v, rho)
+    lap = 0.0
+    for i in range(3):
+        e = np.zeros(3)
+        e[i] = 1.0
+        v_plus = v + h * e
+        v_minus = v - h * e
+        lap += (psi(v_plus, rho) - 2 * psi0 + psi(v_minus, rho)) / (h**2)
+    
+    return lap
 
 def burn_in_diagnostic(r_trace, nburn):
     """Plotting running mean of r to diagnose burn-in period"""
