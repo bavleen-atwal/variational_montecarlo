@@ -67,6 +67,7 @@ def laplacian_central(psi, v, rho, h):
     return lap
 
 def local_energy_3d(psi, v, rho, h, r_eps = 1e-12, psi_eps = 1e-300):
+    """Finding local energy of wavefunction in 3D using laplacian and central difference scheme"""
     v = np.asarray(v, dtype=float)
     r = np.linalg.norm(v)
     r = max(r, r_eps)
@@ -78,6 +79,7 @@ def local_energy_3d(psi, v, rho, h, r_eps = 1e-12, psi_eps = 1e-300):
     return kinetic + potential
 
 def estimate_energy_3d(psi, samples, rho, h, show=True):
+    """Finding estimated energy from sampled metropolis x values in 3D"""
 
     r_samples = np.asarray(samples, dtype=float)
 
@@ -86,14 +88,54 @@ def estimate_energy_3d(psi, samples, rho, h, show=True):
     E_mean = np.mean(E_samples)
     E_std = float(np.std(E_samples, ddof=1))
     E_sem = E_std / np.sqrt(len(E_samples))
-    print(f'Estimated energy: {E_mean:.6f} ± {E_sem:.3f}')
     if show:
-        plt.hist(E_samples, bins=90, density=True, alpha=0.7)
+        print(f'Estimated energy: {E_mean:.6f} ± {E_sem:.3f}')
+        plt.hist(E_samples, bins=90, density=True, alpha=0.7, color='maroon')
         plt.xlabel(r"Local energy $E_L$")
         plt.ylabel("Density")
         plt.title("Local energy distribution")
+        plt.figtext(0.55, 0.8, f'Estimated mean energy: {E_mean:.3f}', fontsize=10)
         plt.show()
-    return E_mean
+    return E_samples, E_mean, E_sem
+
+def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = False):
+    """First scan over variational parameter rho to find initial energy curve. Checks if current pipeline is converging"""
+
+    rhos_out = np.asarray(rhos, dtype=float)
+    E_means = np.zeros_like(rhos_out)
+    E_sems = np.zeros_like(rhos_out)
+    acc_rates = np.zeros_like(rhos_out)
+    for i, rho in enumerate(rhos_out):
+        accepted_x, full_x, acc_rate, r_trace = metropolis_3d(
+            psi=psi_hydrogen,
+            x0=x0,
+            rho=rho,
+            nsteps=nsteps,
+            stepsize=stepsize,
+            nburn=nburn,
+            seed=seed
+        )
+        E_samples, E_mean, E_sem = estimate_energy_3d(
+            psi=psi,
+            samples=accepted_x,
+            rho=rho,
+            h=h_lap,
+            show=False
+        )
+        E_means[i] = E_mean
+        E_sems[i] = E_sem
+        acc_rates[i] = acc_rate
+        print(f"rho={rho:.3f}  E={E_mean:.6f} ± {E_sem:.6f}  acc={acc_rate:.3f}")
+
+    if doplot:
+        plt.errorbar(rhos_out, E_means, yerr=E_sems, fmt='o', capsize=3, color='k')
+        plt.xlabel(r"Variational parameter $\rho$")
+        plt.ylabel(r"Estimated energy $E(\rho)$")
+        plt.title(r"VMC energy curve $E(\rho)$")
+        plt.show() 
+    
+    pack = [rhos_out, E_means, E_sems, acc_rates]
+    return pack
 
 # Diagnostic functions for optimising and verifying
 
@@ -193,8 +235,9 @@ nsteps = 100000
 stepsize = 1.0
 nburn = 6000
 h = 1e-4
+rhos = np.array([0.5, 0.7, 0.9, 1.0, 1.1, 1.3, 1.5])
 
-accepted_x, full_x, acc_rate, r_trace = metropolis_3d(
+test_x, testfull_x, test_rate, test_trace = metropolis_3d(
     psi=psi_hydrogen,
     x0=x0,
     rho=rho,
@@ -204,10 +247,13 @@ accepted_x, full_x, acc_rate, r_trace = metropolis_3d(
     seed = 1234
 )
 
-E_mean = estimate_energy_3d(psi_hydrogen, accepted_x, rho, h=h, show=True)
+test_E, test_mean, test_sem = estimate_energy_3d(psi_hydrogen, test_x, rho, h=h, show=False)
 
-print("Acceptance rate:", acc_rate)
-print("full_x shape:", full_x.shape)
+pack = initial_scan(psi_hydrogen, rhos, x0, nsteps, stepsize, nburn, h_lap=h, seed=1234, doplot=True)
+
+
+print("Acceptance rate:", test_rate)
+print("full_x shape:", testfull_x.shape)
 
 # Plotting diagnostics to select burn-in and check correct sampling
 #burn_in_diagnostic(r_trace, nburn, stepsize)
