@@ -66,6 +66,37 @@ def laplacian_central(psi, v, rho, h):
     
     return lap
 
+def local_energy_3d(psi, v, rho, h, r_eps = 1e-12, psi_eps = 1e-300):
+    v = np.asarray(v, dtype=float)
+    r = np.linalg.norm(v)
+    r = max(r, r_eps)
+    psi0 = psi(v, rho)
+    psi0 = max(abs(psi0), psi_eps)
+    lap = laplacian_central(psi, v, rho, h)
+    kinetic = -0.5* (lap / psi0)
+    potential = -1.0 / r
+    return kinetic + potential
+
+def estimate_energy_3d(psi, samples, rho, h, show=True):
+
+    r_samples = np.asarray(samples, dtype=float)
+
+    E_samples = np.array([local_energy_3d(psi, v, rho, h) for v in r_samples], dtype=float)
+
+    E_mean = np.mean(E_samples)
+    E_std = float(np.std(E_samples, ddof=1))
+    E_sem = E_std / np.sqrt(len(E_samples))
+    print(f'Estimated energy: {E_mean:.6f} ± {E_sem:.3f}')
+    if show:
+        plt.hist(E_samples, bins=90, density=True, alpha=0.7)
+        plt.xlabel(r"Local energy $E_L$")
+        plt.ylabel("Density")
+        plt.title("Local energy distribution")
+        plt.show()
+    return E_mean
+
+# Diagnostic functions for optimising and verifying
+
 def laplacian_diagnostic(a = 0.7, seed=0, npoints=200, show=True):
 
     # Defining known gaussian function
@@ -161,6 +192,7 @@ rho = 1.0
 nsteps = 100000
 stepsize = 1.0
 nburn = 6000
+h = 1e-4
 
 accepted_x, full_x, acc_rate, r_trace = metropolis_3d(
     psi=psi_hydrogen,
@@ -171,6 +203,8 @@ accepted_x, full_x, acc_rate, r_trace = metropolis_3d(
     nburn=nburn,
     seed = 1234
 )
+
+E_mean = estimate_energy_3d(psi_hydrogen, accepted_x, rho, h=h, show=True)
 
 print("Acceptance rate:", acc_rate)
 print("full_x shape:", full_x.shape)
