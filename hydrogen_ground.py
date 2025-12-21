@@ -98,6 +98,8 @@ def estimate_energy_3d(psi, samples, rho, h, show=True):
         plt.show()
     return E_samples, E_mean, E_sem
 
+
+############# Diagnostic functions for optimising and verifying ############
 def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = False):
     """First scan over variational parameter rho to find initial energy curve. Checks if current pipeline is converging"""
 
@@ -136,8 +138,6 @@ def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = F
     
     pack = [rhos_out, E_means, E_sems, acc_rates]
     return pack
-
-# Diagnostic functions for optimising and verifying
 
 def laplacian_diagnostic(a = 0.7, seed=0, npoints=200, show=True):
 
@@ -249,8 +249,6 @@ test_x, testfull_x, test_rate, test_trace = metropolis_3d(
 
 test_E, test_mean, test_sem = estimate_energy_3d(psi_hydrogen, test_x, rho, h=h, show=False)
 
-pack = initial_scan(psi_hydrogen, rhos, x0, nsteps, stepsize, nburn, h_lap=h, seed=1234, doplot=True)
-
 
 print("Acceptance rate:", test_rate)
 print("full_x shape:", testfull_x.shape)
@@ -259,3 +257,4 @@ print("full_x shape:", testfull_x.shape)
 #burn_in_diagnostic(r_trace, nburn, stepsize)
 #sampling_diagnostic(r_trace, nburn, rho)
 #laplacian_diagnostic()
+#pack = initial_scan(psi_hydrogen, rhos, x0, nsteps, stepsize, nburn, h_lap=h, seed=1234, doplot=True)
