@@ -66,7 +66,64 @@ def laplacian_central(psi, v, rho, h):
     
     return lap
 
-def burn_in_diagnostic(r_trace, nburn):
+def laplacian_diagnostic(a = 0.7, seed=0, npoints=200, show=True):
+
+    # Defining known gaussian function
+    def phi_gaussian(v, a):
+        r2 = np.dot(v, v)
+        return np.exp(-a * r2)
+    
+    # Defining known analytic laplacian
+    def laplacian_gaussian_analytic(v, a):
+        r2 = np.dot(v, v)
+        return (-6.0 * a + 4.0 * a * a * r2) * np.exp(-a * r2)
+    
+    rng = np.random.default_rng(seed)
+
+    # Random test points
+    points = rng.normal(0.0, 1.0, size=(npoints, 3))
+
+    hs = np.array([1e-5,1e-4, 2e-4, 3e-4, 1e-3, 2e-3, 3e-3, 1e-2, 2e-2, 3e-2, 1e-1, 7e-2, 5e-2, 3e-2, 2e-2, 1.5e-2, 1e-2])
+    errors = []
+
+    #Computing errors for different step sizes
+    for h in hs:
+        err_list = []
+        for v in points:
+            fd = laplacian_central(phi_gaussian, v, a, h)
+            an = laplacian_gaussian_analytic(v, a)
+            err_list.append(abs(fd - an))
+        errors.append(np.mean(err_list))
+
+    errors = np.array(errors)
+    p, c = np.polyfit(np.log(hs), np.log(errors), 1)
+    print(f"Estimated order p ≈ {p:.3f} (expect ~2 for central 2nd derivative)")
+    if show:
+        plt.loglog(hs, errors, marker='o', color='k', linestyle = '--', label = f'Slope of {p:.3f}')
+        plt.xlabel("Finite-difference step h")
+        plt.ylabel("Mean absolute error")
+        plt.title("3D Laplacian verification for truncation error")
+        plt.legend()
+        plt.show()
+
+    # Generating random points again for set step size
+    step = 1e-2
+    rng = np.random.default_rng(1)
+    points = rng.normal(0.0, 1.0, size=(5, 3))
+
+    print("v\t\tFD Laplacian\tExact Laplacian\tAbsolute error")
+    print("-"*70)
+
+    # Comparing finite-difference and analytic laplacians directly
+    for v in points:
+        fd = laplacian_central(phi_gaussian, v, a, step)
+        exact = laplacian_gaussian_analytic(v, a)
+        err = abs(fd - exact)
+        print(f"{v}\t{fd: .6e}\t{exact: .6e}\t{err: .2e}")
+
+    return hs, errors
+
+def burn_in_diagnostic(r_trace, nburn, stepsize=None):
     """Plotting running mean of r to diagnose burn-in period"""
     running_mean = np.cumsum(r_trace) / np.arange(1, len(r_trace) + 1)
     plt.plot(running_mean, lw=1.2, color='k')
@@ -78,7 +135,7 @@ def burn_in_diagnostic(r_trace, nburn):
     plt.legend()
     plt.show()
 
-def sampling_diagnostic(r_trace, rho, bins=50):
+def sampling_diagnostic(r_trace, nburn, rho, bins=50):
     r_samples = r_trace[nburn:]
     counts, bins, _ = plt.hist(
         r_samples,
@@ -119,5 +176,6 @@ print("Acceptance rate:", acc_rate)
 print("full_x shape:", full_x.shape)
 
 # Plotting diagnostics to select burn-in and check correct sampling
-burn_in_diagnostic(r_trace, nburn)
-sampling_diagnostic(r_trace, rho)
+#burn_in_diagnostic(r_trace, nburn, stepsize)
+#sampling_diagnostic(r_trace, nburn, rho)
+#laplacian_diagnostic()
