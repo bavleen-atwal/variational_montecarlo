@@ -50,10 +50,42 @@ def metropolis_3d(psi, x0, rho, nsteps, stepsize,nburn, seed  = None):
             pass
 
     acceptance_rate = accepted / nsteps
-    return accepted_x, np.array(full_x), acceptance_rate, np.array(r_trace)
+    return accepted_x, np.array(full_x), acceptance_rate, np.array(r_trace)  
 
 
 
+def burn_in_diagnostic(r_trace, nburn):
+    """Plotting running mean of r to diagnose burn-in period"""
+    running_mean = np.cumsum(r_trace) / np.arange(1, len(r_trace) + 1)
+    plt.plot(running_mean, lw=1.2, color='k')
+    plt.xlabel(f"Metropolis step of {stepsize} sigma")
+    plt.ylabel(r"Running mean of $r$")
+    plt.axvline( x=nburn, color='r', linestyle='--', label=f'Iteration {nburn}, End of burn-in')
+    plt.title("Running mean of $r$ (burn-in diagnostic)")
+    plt.xlim(right=50000)
+    plt.legend()
+    plt.show()
+
+def sampling_diagnostic(r_trace, rho, bins=50):
+    r_samples = r_trace[nburn:]
+    counts, bins, _ = plt.hist(
+        r_samples,
+        bins=50,
+        density=True,
+        alpha=0.7,
+        label="Sampled $r$"
+    )
+    plt.xlabel(r"$r$")
+    plt.ylabel("Probability density")
+    r_vals = np.linspace(0, r_samples.max(), 400)
+    theory = r_vals**2 * np.exp(-2 * rho * r_vals)
+    theory /= np.trapz(theory, r_vals)
+    plt.plot(r_vals, theory, 'r--', lw=2, label=r"$r^2 e^{-2\rho r}$")
+    plt.legend()
+    plt.title("Radial distribution check")
+    plt.show()
+
+# Testing
 
 x0 = np.array([0.5, 0.0, 0.0])
 rho = 1.0
@@ -72,34 +104,8 @@ accepted_x, full_x, acc_rate, r_trace = metropolis_3d(
 )
 
 print("Acceptance rate:", acc_rate)
-print("full_x shape:", full_x.shape)  # should be (nsteps+1, 3)
+print("full_x shape:", full_x.shape)
 
-running_mean = np.cumsum(r_trace) / np.arange(1, len(r_trace) + 1)
-r_samples = r_trace[nburn:]
-
-plt.plot(running_mean, lw=1.2, color='k')
-plt.xlabel(f"Metropolis step of {stepsize} sigma")
-plt.ylabel(r"Running mean of $r$")
-plt.axvline( x=6000, color='r', linestyle='--', label='Iteration 6000, End of burn-in')
-plt.title("Running mean of $r$ (burn-in diagnostic)")
-plt.xlim(right=50000)
-plt.legend()
-plt.show()
-
-counts, bins, _ = plt.hist(
-    r_samples,
-    bins=50,
-    density=True,
-    alpha=0.7,
-    label="Sampled $r$"
-)
-plt.xlabel(r"$r$")
-plt.ylabel("Probability density")
-r_vals = np.linspace(0, r_samples.max(), 400)
-theory = r_vals**2 * np.exp(-2 * rho * r_vals)
-# Normalise numerically
-theory /= np.trapz(theory, r_vals)
-plt.plot(r_vals, theory, 'r--', lw=2, label=r"$r^2 e^{-2\rho r}$")
-plt.legend()
-plt.title("Radial distribution check")
-plt.show()
+# Plotting diagnostics to select burn-in and check correct sampling
+burn_in_diagnostic(r_trace, nburn)
+sampling_diagnostic(r_trace, rho)
