@@ -99,7 +99,7 @@ def estimate_energy_3d(psi, samples, rho, h, show=True):
     return E_samples, E_mean, E_sem
 
 
-############# Diagnostic functions for optimising and verifying ############
+
 def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = False):
     """First scan over variational parameter rho to find initial energy curve. Checks if current pipeline is converging"""
 
@@ -109,7 +109,7 @@ def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = F
     acc_rates = np.zeros_like(rhos_out)
     for i, rho in enumerate(rhos_out):
         accepted_x, full_x, acc_rate, r_trace = metropolis_3d(
-            psi=psi_hydrogen,
+            psi=psi,
             x0=x0,
             rho=rho,
             nsteps=nsteps,
@@ -127,9 +127,10 @@ def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = F
         E_means[i] = E_mean
         E_sems[i] = E_sem
         acc_rates[i] = acc_rate
-        print(f"rho={rho:.3f}  E={E_mean:.6f} ± {E_sem:.6f}  acc={acc_rate:.3f}")
 
     if doplot:
+        print(f"rho={rho:.3f}  E={E_mean:.6f} ± {E_sem:.6f}  acc={acc_rate:.3f}")
+
         plt.errorbar(rhos_out, E_means, yerr=E_sems, fmt='o', capsize=3, color='k')
         plt.xlabel(r"Variational parameter $\rho$")
         plt.ylabel(r"Estimated energy $E(\rho)$")
@@ -138,6 +139,143 @@ def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = F
     
     pack = [rhos_out, E_means, E_sems, acc_rates]
     return pack
+
+def vmc_E_of_rho(psi, rho, x0, nsteps, stepsize, nburn, h, seed=None):
+    """ Runtime function for VMC """
+    accepted_x, full_x, acc_rate, _ = metropolis_3d(
+        psi=psi,
+        x0=x0,
+        rho=rho,
+        nsteps=nsteps,
+        stepsize=stepsize,
+        nburn=nburn,
+        seed=seed
+    )
+    E_samples, E_mean, E_sem = estimate_energy_3d(
+        psi=psi,
+        samples=accepted_x,
+        rho=rho,
+        h=h,
+        show=False
+    )
+    return float(E_mean), float(E_sem), float(acc_rate)
+
+def bracket_from_scan(pack):
+    """ From initial scan data, finds 3 rho values bracketing minimum energy """
+    rhos_out, E_means, E_sems, acc_rates = pack
+    rhos_out = np.asarray(rhos_out, dtype=float)
+    E_means = np.asarray(E_means, dtype=float)
+
+    j = int(np.argmin(E_means))
+
+    if j == 0 or j == len(rhos_out) - 1:
+        raise ValueError(
+            "Extend the scan range so the minimum is bracketed."
+        )
+
+    return float(rhos_out[j - 1]), float(rhos_out[j]), float(rhos_out[j + 1])
+
+def parabolic_minimise_rho(
+    psi,
+    x0,
+    nsteps,
+    stepsize,
+    nburn,
+    h,
+    rho1,
+    rho2,
+    rho3,
+    seed=1234,
+    max_iter=12,
+    tol_rho=1e-3,
+    min_step=1e-4,
+    verbose=True
+):
+    """ Parabolic interpolation minimiser for 1D variational parameter rho."""
+
+    # Evaluating initial bracket
+    E1, s1, a1 = vmc_E_of_rho(psi, rho1, x0, nsteps, stepsize, nburn, h, seed=seed + 1)
+    E2, s2, a2 = vmc_E_of_rho(psi, rho2, x0, nsteps, stepsize, nburn, h, seed=seed + 2)
+    E3, s3, a3 = vmc_E_of_rho(psi, rho3, x0, nsteps, stepsize, nburn, h, seed=seed + 3)
+
+    if not (rho1 < rho2 < rho3):
+        raise ValueError("Require rho1 < rho2 < rho3.")
+
+    history = []
+
+    def parabola_vertex(x1, y1, x2, y2, x3, y3):
+        """
+        x-coordinate of the minimum of the parabola through three points.
+        """
+        # Denominator
+        denom = (x2 - x1) * (y2 - y3) - (x2 - x3) * (y2 - y1)
+        if not np.isfinite(denom) or abs(denom) < 1e-14:
+            return None
+
+        num = (x2 - x1)**2 * (y2 - y3) - (x2 - x3)**2 * (y2 - y1)
+        x_min = x2 - 0.5 * (num / denom)
+
+        if not np.isfinite(x_min):
+            return None
+
+        return float(x_min)
+
+    if verbose and not (E2 <= E1 and E2 <= E3):
+        print("Warning: initial bracket does not satisfy E(rho2) <= E(rho1), E(rho3). "
+              "Noise may be large; consider increasing nsteps or scanning a bit wider.")
+
+    rho_best = rho2
+    E_best = E2
+
+    for it in range(max_iter):
+        rho_new = parabola_vertex(rho1, E1, rho2, E2, rho3, E3)
+
+        # Fallback if parabola fit is degenerate
+        if rho_new is None or not np.isfinite(rho_new):
+            rho_new = 0.5 * (rho1 + rho3)
+
+        if rho_new <= rho1 or rho_new >= rho3: # Clamping to window
+            rho_new = 0.5 * (rho1 + rho3)
+
+        if abs(rho_new - rho2) < min_step:
+            rho_new = rho2 + np.sign(rho_new - rho2) * min_step # Force move step if new proposed sample is too close to old x
+
+            rho_new = min(max(rho_new, rho1 + min_step), rho3 - min_step)
+
+        E_new, s_new, a_new = vmc_E_of_rho(psi, rho_new, x0, nsteps, stepsize, nburn, h, seed=seed + 10 + it)
+
+        # Recording iteration state
+        history.append({
+            "iter": it,
+            "rho1": rho1, "E1": E1,
+            "rho2": rho2, "E2": E2,
+            "rho3": rho3, "E3": E3,
+            "rho_new": rho_new, "E_new": E_new,
+            "acc_new": a_new
+        })
+
+        if verbose:
+            print(f"[{it:02d}] bracket: ({rho1:.6f}, {rho2:.6f}, {rho3:.6f}) "
+                  f"E=({E1:.6f}, {E2:.6f}, {E3:.6f})  -> rho_new={rho_new:.6f}, E_new={E_new:.6f}")
+
+        if E_new < E_best:
+            rho_best, E_best = rho_new, E_new
+
+        pts = [(rho1, E1), (rho2, E2), (rho3, E3), (rho_new, E_new)] #Adding new point to bracket set
+        worst = max(pts, key=lambda t: t[1])
+        pts.remove(worst)
+
+        pts.sort(key=lambda t: t[0])
+        (rho1, E1), (rho2, E2), (rho3, E3) = pts
+
+        if (rho3 - rho1) < tol_rho:
+            if verbose:
+                print(f"Converged: rho_best={rho_best:.6f}, E_best={E_best:.6f}")
+            break
+
+    return rho_best, E_best, history
+
+############# Diagnostic functions for optimising and verifying ############
 
 def laplacian_diagnostic(a = 0.7, seed=0, npoints=200, show=True):
 
@@ -237,21 +375,27 @@ nburn = 6000
 h = 1e-4
 rhos = np.array([0.5, 0.7, 0.9, 1.0, 1.1, 1.3, 1.5])
 
-test_x, testfull_x, test_rate, test_trace = metropolis_3d(
+pack = initial_scan(psi_hydrogen, rhos, x0, nsteps, stepsize, nburn, h_lap=h, seed=1234, doplot=False)
+rho1, rho2, rho3 = bracket_from_scan(pack)
+
+rho_opt, E_opt, hist = parabolic_minimise_rho(
     psi=psi_hydrogen,
     x0=x0,
-    rho=rho,
     nsteps=nsteps,
     stepsize=stepsize,
     nburn=nburn,
-    seed = 1234
+    h=h,
+    rho1=rho1,
+    rho2=rho2,
+    rho3=rho3,
+    seed=1234,
+    max_iter=10,
+    tol_rho=1e-3,
+    verbose=True
 )
 
-test_E, test_mean, test_sem = estimate_energy_3d(psi_hydrogen, test_x, rho, h=h, show=False)
-
-
-print("Acceptance rate:", test_rate)
-print("full_x shape:", testfull_x.shape)
+print("\nOptimal rho:", rho_opt)
+print("Optimal energy:", E_opt)
 
 # Plotting diagnostics to select burn-in and check correct sampling
 #burn_in_diagnostic(r_trace, nburn, stepsize)
