@@ -192,11 +192,21 @@ def parabolic_minimise_rho(
     verbose=True
 ):
     """ Parabolic interpolation minimiser for 1D variational parameter rho."""
+    cache = {}
+    def cached_vmc(rho_val, seed_val):
+        key = int(round(float(rho_val) / min_step))
+        if key in cache:
+            if verbose:
+                print("Cache hit")
+            return cache[key]
+        En, s, a = vmc_E_of_rho(psi, rho_val, x0, nsteps, stepsize, nburn, h, seed=seed_val)
+        cache[key] = (En, s, a)
+        return En, s, a
 
     # Evaluating initial bracket
-    E1, s1, a1 = vmc_E_of_rho(psi, rho1, x0, nsteps, stepsize, nburn, h, seed=seed + 1)
-    E2, s2, a2 = vmc_E_of_rho(psi, rho2, x0, nsteps, stepsize, nburn, h, seed=seed + 2)
-    E3, s3, a3 = vmc_E_of_rho(psi, rho3, x0, nsteps, stepsize, nburn, h, seed=seed + 3)
+    E1, s1, a1 = cached_vmc(rho1, seed_val=seed)
+    E2, s2, a2 = cached_vmc(rho2, seed_val=seed)
+    E3, s3, a3 = cached_vmc(rho3, seed_val=seed)
 
     if not (rho1 < rho2 < rho3):
         raise ValueError("Require rho1 < rho2 < rho3.")
@@ -226,8 +236,9 @@ def parabolic_minimise_rho(
 
     rho_best = rho2
     E_best = E2
-
-    for it in range(max_iter):
+    it=0
+    while (rho3-rho1) >= tol_rho and it < max_iter:
+        it += 1
         rho_new = parabola_vertex(rho1, E1, rho2, E2, rho3, E3)
 
         # Fallback if parabola fit is degenerate
@@ -237,12 +248,11 @@ def parabolic_minimise_rho(
         if rho_new <= rho1 or rho_new >= rho3: # Clamping to window
             rho_new = 0.5 * (rho1 + rho3)
 
-        if abs(rho_new - rho2) < min_step:
-            rho_new = rho2 + np.sign(rho_new - rho2) * min_step # Force move step if new proposed sample is too close to old x
+        if abs(rho_new - rho2) < min_step: # Force move step if new proposed sample is too close to old x
+            direction = 1.0 if rho_new >= rho2 else -1.0
+            rho_new = rho2 + direction * min_step
 
-            rho_new = min(max(rho_new, rho1 + min_step), rho3 - min_step)
-
-        E_new, s_new, a_new = vmc_E_of_rho(psi, rho_new, x0, nsteps, stepsize, nburn, h, seed=seed + 10 + it)
+        E_new, s_new, a_new = cached_vmc(rho_new, seed_val=seed)
 
         # Recording iteration state
         history.append({
@@ -261,19 +271,39 @@ def parabolic_minimise_rho(
         if E_new < E_best:
             rho_best, E_best = rho_new, E_new
 
+        old_bracket = (rho1, rho2, rho3)
+
         pts = [(rho1, E1), (rho2, E2), (rho3, E3), (rho_new, E_new)] #Adding new point to bracket set
         worst = max(pts, key=lambda t: t[1])
         pts.remove(worst)
-
         pts.sort(key=lambda t: t[0])
         (rho1, E1), (rho2, E2), (rho3, E3) = pts
 
+        if (rho1, rho2, rho3) == old_bracket:
+            if (rho2 - rho1) > (rho3 - rho2):
+                rho_try= 0.5 * (rho1+rho2)
+                E_try, s_try, a_try = cached_vmc(rho_try, seed_val=seed)
+                rho1, E1 = rho_try, E_try
+            else:
+                rho_try = 0.5 * (rho2+rho3)
+                E_try, s_try, a_try = cached_vmc(rho_try, seed_val=seed)
+                rho3, E3 = rho_try, E_try
+            pts_try = [(rho1, E1), (rho2, E2), (rho3, E3)]
+            pts_try.sort(key=lambda t: t[0])
+            (rho1, E1), (rho2, E2), (rho3, E3) = pts_try
+        
         if (rho3 - rho1) < tol_rho:
+            candidates = [(rho1, E1), (rho2, E2), (rho3, E3)]
+            rho_star, E_star = min(candidates, key=lambda t: t[1])
             if verbose:
                 print(f"Converged: rho_best={rho_best:.6f}, E_best={E_best:.6f}")
+                print(
+                    f"Converged: bracket=({rho1:.6f}, {rho2:.6f}, {rho3:.6f})  "
+                    f"-> rho*={rho_star:.6f}, E*={E_star:.6f}"
+                )
             break
 
-    return rho_best, E_best, history
+    return rho_star, E_star, history
 
 ############# Diagnostic functions for optimising and verifying ############
 
@@ -388,8 +418,8 @@ rho_opt, E_opt, hist = parabolic_minimise_rho(
     rho1=rho1,
     rho2=rho2,
     rho3=rho3,
-    seed=1234,
-    max_iter=10,
+    seed=2345,
+    max_iter=35,
     tol_rho=1e-3,
     verbose=True
 )
