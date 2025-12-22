@@ -395,6 +395,23 @@ def sampling_diagnostic(r_trace, nburn, rho, bins=50):
     plt.title("Radial distribution check")
     plt.show()
 
+def plot_xy_density(accepted_x, bins=150, density=True, title=None):
+    """ Projected number density in the x–y plane from 3D Metropolis samples. """
+    samples = np.asarray(accepted_x, dtype=float)
+    x = samples[:, 0]
+    y = samples[:, 1]
+
+    H, xedges, yedges, im = plt.hist2d(x, y, bins=bins, density=density)
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.colorbar(im, label="Projected density" if density else "Counts per bin")
+
+    if title is None:
+        title = "Ground-state number density projected onto x–y plane"
+    plt.title(title)
+    plt.show()
+
 # Testing
 
 x0 = np.array([0.5, 0.0, 0.0])
@@ -408,6 +425,18 @@ rhos = np.array([0.5, 0.7, 0.9, 1.0, 1.1, 1.3, 1.5])
 pack = initial_scan(psi_hydrogen, rhos, x0, nsteps, stepsize, nburn, h_lap=h, seed=1234, doplot=False)
 rho1, rho2, rho3 = bracket_from_scan(pack)
 
+test_x, testfull_x, test_rate, test_trace = metropolis_3d(
+    psi=psi_hydrogen,
+    x0=x0,
+    rho=rho,
+    nsteps=nsteps,
+    stepsize=stepsize,
+    nburn=nburn,
+    seed = 1234
+)
+plot_xy_density(test_x, bins=150, density=True)
+
+
 rho_opt, E_opt, hist = parabolic_minimise_rho(
     psi=psi_hydrogen,
     x0=x0,
@@ -418,7 +447,7 @@ rho_opt, E_opt, hist = parabolic_minimise_rho(
     rho1=rho1,
     rho2=rho2,
     rho3=rho3,
-    seed=2345,
+    seed=1234,
     max_iter=35,
     tol_rho=1e-3,
     verbose=True
