@@ -98,8 +98,6 @@ def estimate_energy_3d(psi, samples, rho, h, show=True):
         plt.show()
     return E_samples, E_mean, E_sem
 
-
-
 def initial_scan(psi, rhos, x0, nsteps, stepsize, nburn, h_lap, seed, doplot = False):
     """First scan over variational parameter rho to find initial energy curve. Checks if current pipeline is converging"""
 
@@ -305,6 +303,103 @@ def parabolic_minimise_rho(
 
     return rho_star, E_star, history
 
+def gradient_descent_minimise_rho(
+    psi,
+    rho0,
+    x0,
+    nsteps,
+    stepsize,
+    nburn,
+    h,
+    lr=5e-3,
+    max_iter=30,
+    tol_grad=5e-4,
+    tol_rho=1e-4,
+    rho_min=1e-8,
+    seed=1234,
+    verbose=True,
+):
+    """
+    Gradient-descent minimiser for the 1D variational parameter rho (hydrogen).
+    """
+    rng = np.random.default_rng(seed)
+
+    def run_vmc(rho_val, seed_val):
+        accepted_x, _, acc_rate, _ = metropolis_3d(
+            psi=psi,
+            x0=x0,
+            rho=rho_val,
+            nsteps=nsteps,
+            stepsize=stepsize,
+            nburn=nburn,
+            seed=seed_val
+        )
+        samples = np.asarray(accepted_x, dtype=float)
+        E_samples = np.array([local_energy_3d(psi, v, rho_val, h) for v in samples], dtype=float)
+        E_mean = float(np.mean(E_samples))
+        E_std = float(np.std(E_samples, ddof=1))
+        E_sem = E_std / np.sqrt(len(E_samples))
+        return samples, E_samples, E_mean, E_sem, float(acc_rate)
+
+    rho = float(rho0)
+    rho_best = rho
+    E_best = np.inf
+    history = []
+
+    for it in range(1, max_iter + 1):
+        # Use a new seed each iteration
+        seed_it = int(rng.integers(0, 2**31 - 1))
+
+        samples, E_samples, E_mean, E_sem, acc = run_vmc(rho, seed_it)
+
+        r_vals = np.linalg.norm(samples, axis=1)
+        dlogpsi = -r_vals
+
+        grad = (2.0 / len(E_samples)) * np.sum((E_samples - E_mean) * dlogpsi)
+        grad = float(grad)
+
+        # Tracking best energy seen
+        if E_mean < E_best:
+            E_best = E_mean
+            rho_best = rho
+
+        rho_new = rho - lr * grad
+        # Enforcing rho > 0
+        rho_new = max(float(rho_new), rho_min)
+
+        history.append({
+            "iter": it,
+            "rho": rho,
+            "E_mean": E_mean,
+            "E_sem": E_sem,
+            "acc": acc,
+            "grad": grad,
+            "rho_new": rho_new,
+        })
+
+        if verbose:
+            print(
+                f"[{it:02d}] rho={rho:.6f}  E={E_mean:.6f} ± {E_sem:.6f}  "
+                f"grad={grad:+.6e}  -> rho_new={rho_new:.6f}  acc={acc:.3f}"
+            )
+
+        # Stopping conditions
+        if abs(grad) < tol_grad:
+            if verbose:
+                print(f"Stop: |grad| < tol_grad ({tol_grad:g}).")
+            rho = rho_new
+            break
+
+        if abs(rho_new - rho) < tol_rho:
+            if verbose:
+                print(f"Stop: |Δrho| < tol_rho ({tol_rho:g}).")
+            rho = rho_new
+            break
+
+        rho = rho_new
+
+    return rho_best, E_best, history
+
 ############# Diagnostic functions for optimising and verifying ############
 
 def laplacian_diagnostic(a = 0.7, seed=0, npoints=200, show=True):
@@ -417,13 +512,10 @@ def plot_xy_density(accepted_x, bins=150, density=True, title=None):
 x0 = np.array([0.5, 0.0, 0.0])
 rho = 1.0
 nsteps = 100000
-stepsize = 1.0
+stepsize = 1.5
 nburn = 6000
 h = 1e-4
 rhos = np.array([0.5, 0.7, 0.9, 1.0, 1.1, 1.3, 1.5])
-
-pack = initial_scan(psi_hydrogen, rhos, x0, nsteps, stepsize, nburn, h_lap=h, seed=1234, doplot=False)
-rho1, rho2, rho3 = bracket_from_scan(pack)
 
 test_x, testfull_x, test_rate, test_trace = metropolis_3d(
     psi=psi_hydrogen,
@@ -434,8 +526,25 @@ test_x, testfull_x, test_rate, test_trace = metropolis_3d(
     nburn=nburn,
     seed = 1234
 )
-plot_xy_density(test_x, bins=150, density=True)
 
+rho_gd, E_gd, hist_gd = gradient_descent_minimise_rho(
+    psi=psi_hydrogen,
+    rho0=0.8,
+    x0=x0,
+    nsteps=nsteps,
+    stepsize=stepsize,
+    nburn=nburn,
+    h=h,
+    lr=0.02,
+    max_iter=80,
+    tol_grad=5e-4,
+    verbose=True,
+)
+print("GD rho:", rho_gd, "E:", E_gd)
+
+"""
+pack = initial_scan(psi_hydrogen, rhos, x0, nsteps, stepsize, nburn, h_lap=h, seed=1234, doplot=True)
+rho1, rho2, rho3 = bracket_from_scan(pack)
 
 rho_opt, E_opt, hist = parabolic_minimise_rho(
     psi=psi_hydrogen,
@@ -452,9 +561,12 @@ rho_opt, E_opt, hist = parabolic_minimise_rho(
     tol_rho=1e-3,
     verbose=True
 )
+"""
 
-print("\nOptimal rho:", rho_opt)
-print("Optimal energy:", E_opt)
+plot_xy_density(test_x, bins=120, density=True)
+
+#print("\nOptimal rho:", rho_opt)
+#print("Optimal energy:", E_opt)
 
 # Plotting diagnostics to select burn-in and check correct sampling
 #burn_in_diagnostic(r_trace, nburn, stepsize)
