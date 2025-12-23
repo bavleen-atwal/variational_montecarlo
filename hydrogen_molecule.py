@@ -51,14 +51,12 @@ def metropolis_3d(logP_h2, x0, rhos, bond_length, nsteps, stepsize, nburn, seed=
     """
     6D Metropolis sampler for H2 still using symmetrical gaussian proposals """
     rng = np.random.default_rng(seed)
-    full_x = []
     accepted = 0
     accepted_x = []
 
     x = np.array(x0, dtype=float)
     logP_x = float(logP_h2(x, rhos, bond_length))
 
-    full_x.append(x.copy())
 
     for i in range(nsteps):
         x_trial = x + rng.normal(0.0, stepsize, size=6)
@@ -73,7 +71,6 @@ def metropolis_3d(logP_h2, x0, rhos, bond_length, nsteps, stepsize, nburn, seed=
             logP_x = logP_trial
             accepted += 1
 
-        full_x.append(x.copy())
         if i>= nburn:
             accepted_x.append(x.copy())
 
@@ -171,7 +168,7 @@ def gradient_descent_minimise_rhos_h2(
     max_iter=40,
     tol_grad=1e-3,
     tol_rhos=1e-4,
-    rhos_min=(1e-6, 1e-6, 1e-6),
+    rhos_min=(1e-7, 1e-7, 1e-7),
     seed=1234,
     verbose=True,
 ):
@@ -183,8 +180,6 @@ def gradient_descent_minimise_rhos_h2(
     rhos = np.asarray(rhos0, dtype=float).copy()
     rhos_min = np.asarray(rhos_min, dtype=float)
 
-    rhos_best = rhos.copy()
-    E_best = np.inf
     history = []
 
     for it in range(1, max_iter + 1):
@@ -215,10 +210,6 @@ def gradient_descent_minimise_rhos_h2(
         grads *= (2.0 / len(E_samples))
 
         grad_norm = float(np.linalg.norm(grads))
-
-        if E_mean < E_best:
-            E_best = E_mean
-            rhos_best = rhos.copy()
 
         # Gradient step
         rhos_new = rhos - lr * grads
@@ -257,55 +248,221 @@ def gradient_descent_minimise_rhos_h2(
 
         rhos = rhos_new
 
-    return rhos_best, float(E_best), history
+    return rhos, float(E_mean), history
 
-def plot_density_log(samples, bond_length, bins=100):
-    r1 = samples[:, :3]
-    x = r1[:, 0]
-    y = r1[:, 1]
+def estimate_energy_h2_fixed_rhos(psi_h2, logP_h2, rhos, x0, bond_length,
+                                 nsteps, stepsize, nburn, h, seed=0):
+    """Sample with fixed rhos and return E mean ± SEM + acceptance + samples for final energy"""
+    samples, acc = metropolis_3d(
+        logP_h2=logP_h2, x0=x0, rhos=rhos, bond_length=bond_length,
+        nsteps=nsteps, stepsize=stepsize, nburn=nburn, seed=seed
+    )
 
-    plt.hist2d(x, y, bins=bins, density=True, norm=LogNorm(), cmap='magma')
-    #plt.colorbar(label="Probability density")
-    plt.xlabel("x (a.u.)")
-    plt.ylabel("y (a.u.)")
-    plt.title(f"2D projection of electron density for atomic distance {bond_length} a.u.")
-    plt.gca().set_facecolor("black")
-    plt.gca().set_aspect("equal", adjustable="box")
-    plt.axis("equal")
+    E_samples = np.array([local_energy_h2(psi_h2, V, rhos, bond_length, h)
+                          for V in samples], dtype=float)
+
+    E_mean = float(np.mean(E_samples))
+    E_std  = float(np.std(E_samples, ddof=1))
+    E_sem  = float(E_std / np.sqrt(len(E_samples)))
+
+    return E_mean, E_sem, float(acc), samples
+
+def morse_potential(r, D, a, r0, E_single):
+    return D * (1.0 - np.exp(-a * (r - r0)))**2 - D + 2.0 * E_single
+
+def plot_binding_curve(results):
+    R = np.array([d["R"] for d in results], dtype=float)
+    E = np.array([d["E"] for d in results], dtype=float)
+    dE = np.array([d["E_sem"] for d in results], dtype=float)
+
+    plt.figure(figsize=(6,4))
+    plt.errorbar(R, E, yerr=dE, fmt="o", capsize=3)
+    plt.xlabel("Bond length R (a.u.)")
+    plt.ylabel("Ground state energy E(R)")
+    plt.title("H₂ binding curve from VMC")
+    plt.tight_layout()
     plt.show()
 
-def plot_density(samples, bond_length, bins=80):
-    r1 = samples[:, :3]
-    x = r1[:, 0]
-    y = r1[:, 1]
+def fit_morse(results, E_single=-0.5):
+    R = np.array([d["R"] for d in results], dtype=float)
+    E = np.array([d["E"] for d in results], dtype=float)
 
-    plt.hist2d(x, y, bins=bins, density=True, cmap='viridis')
+    # initial guesses: r0 ~ 1.4, D ~ 0.17, a ~ 1
+    p0 = np.array([0.17, 1.0, 1.4], dtype=float)
+
+    try:
+        from scipy.optimize import curve_fit
+        popt, pcov = curve_fit(
+            lambda r, D, a, r0: morse_potential(r, D, a, r0, E_single),
+            R, E, p0=p0, maxfev=20000
+        )
+        perr = np.sqrt(np.diag(pcov))
+    except Exception as e:
+        print("curve_fit failed, reason:", e)
+        popt, perr = p0, np.array([np.nan, np.nan, np.nan])
+
+    D, a, r0 = popt
+    print(f"Morse fit: D={D:.5f}, a={a:.5f}, r0={r0:.5f}  (E_single={E_single:.5f})")
+
+    # plot fit
+    rgrid = np.linspace(R.min(), R.max(), 300)
+    Efit = morse_potential(rgrid, D, a, r0, E_single)
+
+    plt.figure(figsize=(6,4))
+    plt.plot(R, E, "o", label="VMC")
+    plt.plot(rgrid, Efit, "-", label="Morse fit")
+    plt.xlabel("Bond length R (a.u.)")
+    plt.ylabel("Energy E(R)")
+    plt.title("Morse fit to VMC binding curve")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    return popt, perr
+
+def random_initial_rhos(rng, rho1=(0.6, 1.4), rho2=(0.05, 0.5), rho3=(0.1, 2.0)):
+    return np.array([
+        rng.uniform(*rho1),
+        rng.uniform(*rho2),
+        rng.uniform(*rho3),
+    ], dtype=float)
+
+def plot_density(samples, bond_length, bins=100, use_log=False):
+    """
+    Projected electron density: add BOTH electrons to the 2D histogram.
+    """
+    samples = np.asarray(samples, dtype=float)
+    r1 = samples[:, :3]
+    r2 = samples[:, 3:]
+
+    x = np.concatenate([r1[:, 0], r2[:, 0]])
+    y = np.concatenate([r1[:, 1], r2[:, 1]])
+
+    plt.figure(figsize=(6, 4.8))
+    if use_log:
+        plt.hist2d(
+            x, y, bins=bins,
+            density=True, cmap="magma",
+            norm=LogNorm(vmin=1e-3)
+        )
+    else:
+        plt.hist2d(
+            x, y, bins=bins,
+            density=True, cmap="viridis"
+        )
+
     plt.colorbar(label="Probability density")
     plt.xlabel("x (a.u.)")
     plt.ylabel("y (a.u.)")
-    plt.title(f"2D projection of electron density for atomic distance {bond_length} a.u.")
+    plt.title(f"Projected electron density (both electrons), R={bond_length:.2f}")
     plt.gca().set_aspect("equal", adjustable="box")
-    plt.axis("equal")
+    plt.tight_layout()
     plt.show()
 
-# def metropolis_3d(logP_h2, x0, rhos, bond_length, nsteps, stepsize, nburn, seed=None):
 
-# Testing
+# Running all code
+
+def run_h2_bond_scan(
+    bond_lengths,
+    rhos_init,
+    x0_6d,
+    # optimiser settings
+    opt_nsteps=50000,
+    opt_stepsize=0.5,
+    opt_nburn=6000,
+    h=1e-4,
+    lr=0.02,
+    opt_max_iter=70,
+    # final energy estimate settings
+    eval_nsteps=120000,
+    eval_stepsize=0.5,
+    eval_nburn=8000,
+    seed=1234,
+    make_density_plots=True
+):
+    """For each bond length R:
+      1) optimise rhos
+      2) re-sample with rhos fixed to estimate energy
+      3) plot density (both electrons)
+    Returns arrays for E(R) and fitted parameters later.
+    """
+    results = []
+    rhos0 = np.asarray(rhos_init, dtype=float)
+
+    for k, R in enumerate(bond_lengths):
+        print(f"\n=== Bond length R={R:.3f} ===")
+
+        rhos_opt, E_opt, hist = gradient_descent_minimise_rhos_h2(
+            psi_h2=psi_h2,
+            logP_h2=logP_h2,
+            rhos0=rhos0,
+            x0=x0_6d,
+            bond_length=R,
+            nsteps=opt_nsteps,
+            stepsize=opt_stepsize,
+            nburn=opt_nburn,
+            h=h,
+            lr=lr,
+            max_iter=opt_max_iter,
+            verbose=True,
+            seed=seed + 1000*k
+        )
+
+        # 2) energy estimate with rhos fixed (clean report value)
+        E_mean, E_sem, acc_eval, samples = estimate_energy_h2_fixed_rhos(
+            psi_h2, logP_h2, rhos_opt, x0_6d, R,
+            nsteps=eval_nsteps, stepsize=eval_stepsize, nburn=eval_nburn,
+            h=h, seed=seed + 2000*k
+        )
+
+        print(f"FINAL (fixed rhos): R={R:.3f}  rhos={rhos_opt}  "
+              f"E={E_mean:.6f} ± {E_sem:.6f}  acc={acc_eval:.3f}")
+
+        # 3) required density plot
+        if make_density_plots:
+            plot_density(samples, R, bins=100, use_log=False)
+
+        results.append({
+            "R": float(R),
+            "rhos": np.array(rhos_opt, dtype=float),
+            "E": float(E_mean),
+            "E_sem": float(E_sem),
+            "acc": float(acc_eval),
+        })
+
+        # warm start next R
+        rhos0 = rhos_opt.copy()
+
+    return results
+
 x0_6d = np.array([0.5, 0.0, 0.0,   -0.5, 0.0, 0.0]) 
 rhos0 = np.array([1.0, 0.2, 0.5])
-bond_length = 1.4
+bond_lengths = np.linspace(0.5, 3.0, 5)
+bond_length = 2
 nsteps = 100000
-stepsize = 1.0
+stepsize = 0.5
 nburn = 6000
 seed = 1234
 
+
+results = run_h2_bond_scan(
+        bond_lengths=bond_lengths,
+        rhos_init=rhos0,
+        x0_6d=x0_6d,
+        opt_stepsize=0.5,     # acceptance too low? keep < 1 for now
+        eval_stepsize=0.5,
+        make_density_plots=True
+    )
+
+plot_binding_curve(results)
+popt, perr = fit_morse(results, E_single=-0.5)
+
+"""
 x_samples, testing_rate = metropolis_3d(
     logP_h2, x0_6d, rhos0, bond_length,
     nsteps, stepsize, nburn, seed)
 
 plot_density(x_samples, bond_length)
-
-"""
 rhos_opt, E_opt, hist = gradient_descent_minimise_rhos_h2(
     psi_h2=psi_h2,
     logP_h2=logP_h2,
