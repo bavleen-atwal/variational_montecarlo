@@ -120,8 +120,90 @@ def local_energy_h2(psi_h2, V, rhos, bond_length, h, r_eps=1e-12, psi_eps=1e-300
     V_ee = +1.0 / r12
     V_nn = +1.0 / q12
 
-    return float(kinetic + V_en + V_ee + V_nn)
+    return {
+        "T": float(kinetic),
+        "V_en": float(V_en),
+        "V_ee": float(V_ee),
+        "V_nn": float(V_nn),
+        "E_total": float(kinetic + V_en + V_ee + V_nn),
+        "q12": float(q12),  # for sanity: should be ~bond_length
+        "r12": float(r12),
+    }
 
+def diagnose_energy_terms_at_R(
+    psi_h2, logP_h2, rhos, bond_length,
+    x0_6d, nsteps, stepsize, nburn, h,
+    seed=0, max_print=5
+):
+    """
+    Runs a sampling pass at fixed rhos and prints mean ± std for each term.
+    Also prints a few individual samples so you can spot crazy outliers.
+    """
+    # Use your existing sampler (your metropolis function that returns accepted samples + acc)
+    samples, acc = metropolis_3d(  # rename if yours differs
+        logP_h2=logP_h2,
+        x0=x0_6d,
+        rhos=rhos,
+        bond_length=bond_length,
+        nsteps=nsteps,
+        stepsize=stepsize,
+        nburn=nburn,
+        seed=seed
+    )
+
+    terms_list = []
+    for V in samples:
+        terms_list.append(local_energy_h2(psi_h2, V, rhos, bond_length, h))
+
+    # Collect arrays
+    T    = np.array([d["T"] for d in terms_list])
+    Ven  = np.array([d["V_en"] for d in terms_list])
+    Vee  = np.array([d["V_ee"] for d in terms_list])
+    Vnn  = np.array([d["V_nn"] for d in terms_list])
+    Etot = np.array([d["E_total"] for d in terms_list])
+    q12s = np.array([d["q12"] for d in terms_list])
+
+    def mean_std(x):
+        return float(np.mean(x)), float(np.std(x, ddof=1))
+
+    print(f"\n--- Term breakdown at R={bond_length} ---")
+    print(f"Acceptance: {acc:.3f}")
+    print(f"Mean q12 (should be ~R): {np.mean(q12s):.6f}  (min={np.min(q12s):.6f}, max={np.max(q12s):.6f})")
+
+    for name, arr in [("T", T), ("V_en", Ven), ("V_ee", Vee), ("V_nn", Vnn), ("E_total", Etot)]:
+        m, s = mean_std(arr)
+        print(f"{name:7s}: mean={m:+.6f}   std={s:.6f}")
+
+    # Sanity: V_nn should be basically constant = 1/R
+    print(f"Expected V_nn = 1/R = {1.0/bond_length:.6f}")
+
+    # Print a few individual samples (useful for catching sign explosions/outliers)
+    print("\nExample individual configurations (first few):")
+    for i in range(min(max_print, len(terms_list))):
+        d = terms_list[i]
+        print(f"[{i:02d}] E={d['E_total']:+.6f}  T={d['T']:+.6f}  V_en={d['V_en']:+.6f}  V_ee={d['V_ee']:+.6f}  V_nn={d['V_nn']:+.6f}  r12={d['r12']:.4f}")
+
+    return {
+        "acc": acc,
+        "T": T, "V_en": Ven, "V_ee": Vee, "V_nn": Vnn, "E_total": Etot
+    }
+R = 5
+rhos_test = np.array([1.4279984, 0.19608351, 0.50236534], dtype=float)
+
+x0_6d = np.array([0.5, 0.0, 0.0,  -0.5, 0.0, 0.0], dtype=float)
+
+diag = diagnose_energy_terms_at_R(
+    psi_h2=psi_h2,
+    logP_h2=logP_h2,
+    rhos=rhos_test,
+    bond_length=R,
+    x0_6d=x0_6d,
+    nsteps=30000,     # start moderate; you can increase later
+    stepsize=0.5,     # use your “good acceptance” step
+    nburn=3000,
+    h=1e-4,
+    seed=123
+)
 def grad_logpsi_h2(V, rhos, bond_length):
     rho1, rho2, rho3 = rhos
     q1, q2 = nuclear_positions(bond_length)
@@ -435,6 +517,7 @@ def run_h2_bond_scan(
 
     return results
 
+"""
 x0_6d = np.array([0.5, 0.0, 0.0,   -0.5, 0.0, 0.0]) 
 rhos0 = np.array([1.0, 0.2, 0.5])
 bond_lengths = np.linspace(0.5, 3.0, 5)
@@ -456,7 +539,7 @@ results = run_h2_bond_scan(
 
 plot_binding_curve(results)
 popt, perr = fit_morse(results, E_single=-0.5)
-
+"""
 """
 x_samples, testing_rate = metropolis_3d(
     logP_h2, x0_6d, rhos0, bond_length,
