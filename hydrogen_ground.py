@@ -512,7 +512,7 @@ def plot_xy_density(accepted_x, bins=150, density=True, title=None):
 x0 = np.array([0.5, 0.0, 0.0])
 rho = 1.0
 nsteps = 100000
-stepsize = 1.5
+stepsize = 0.5
 nburn = 6000
 h = 1e-4
 rhos = np.array([0.5, 0.7, 0.9, 1.0, 1.1, 1.3, 1.5])
@@ -526,6 +526,9 @@ test_x, testfull_x, test_rate, test_trace = metropolis_3d(
     nburn=nburn,
     seed = 1234
 )
+burn_in_diagnostic(test_trace, nburn, stepsize)
+sampling_diagnostic(test_trace, nburn, rho)
+laplacian_diagnostic()
 
 rho_gd, E_gd, hist_gd = gradient_descent_minimise_rho(
     psi=psi_hydrogen,
@@ -536,7 +539,7 @@ rho_gd, E_gd, hist_gd = gradient_descent_minimise_rho(
     nburn=nburn,
     h=h,
     lr=0.02,
-    max_iter=80,
+    max_iter=100,
     tol_grad=5e-4,
     verbose=True,
 )

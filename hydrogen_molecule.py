@@ -1,6 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
+import pandas as pd
+import csv
+import os
 
 def nuclear_positions(bond_length):
     """Return posistions of nuclei centred on x axis symmetrically"""
@@ -120,90 +123,8 @@ def local_energy_h2(psi_h2, V, rhos, bond_length, h, r_eps=1e-12, psi_eps=1e-300
     V_ee = +1.0 / r12
     V_nn = +1.0 / q12
 
-    return {
-        "T": float(kinetic),
-        "V_en": float(V_en),
-        "V_ee": float(V_ee),
-        "V_nn": float(V_nn),
-        "E_total": float(kinetic + V_en + V_ee + V_nn),
-        "q12": float(q12),  # for sanity: should be ~bond_length
-        "r12": float(r12),
-    }
+    return float(kinetic + V_en + V_ee + V_nn)
 
-def diagnose_energy_terms_at_R(
-    psi_h2, logP_h2, rhos, bond_length,
-    x0_6d, nsteps, stepsize, nburn, h,
-    seed=0, max_print=5
-):
-    """
-    Runs a sampling pass at fixed rhos and prints mean ± std for each term.
-    Also prints a few individual samples so you can spot crazy outliers.
-    """
-    # Use your existing sampler (your metropolis function that returns accepted samples + acc)
-    samples, acc = metropolis_3d(  # rename if yours differs
-        logP_h2=logP_h2,
-        x0=x0_6d,
-        rhos=rhos,
-        bond_length=bond_length,
-        nsteps=nsteps,
-        stepsize=stepsize,
-        nburn=nburn,
-        seed=seed
-    )
-
-    terms_list = []
-    for V in samples:
-        terms_list.append(local_energy_h2(psi_h2, V, rhos, bond_length, h))
-
-    # Collect arrays
-    T    = np.array([d["T"] for d in terms_list])
-    Ven  = np.array([d["V_en"] for d in terms_list])
-    Vee  = np.array([d["V_ee"] for d in terms_list])
-    Vnn  = np.array([d["V_nn"] for d in terms_list])
-    Etot = np.array([d["E_total"] for d in terms_list])
-    q12s = np.array([d["q12"] for d in terms_list])
-
-    def mean_std(x):
-        return float(np.mean(x)), float(np.std(x, ddof=1))
-
-    print(f"\n--- Term breakdown at R={bond_length} ---")
-    print(f"Acceptance: {acc:.3f}")
-    print(f"Mean q12 (should be ~R): {np.mean(q12s):.6f}  (min={np.min(q12s):.6f}, max={np.max(q12s):.6f})")
-
-    for name, arr in [("T", T), ("V_en", Ven), ("V_ee", Vee), ("V_nn", Vnn), ("E_total", Etot)]:
-        m, s = mean_std(arr)
-        print(f"{name:7s}: mean={m:+.6f}   std={s:.6f}")
-
-    # Sanity: V_nn should be basically constant = 1/R
-    print(f"Expected V_nn = 1/R = {1.0/bond_length:.6f}")
-
-    # Print a few individual samples (useful for catching sign explosions/outliers)
-    print("\nExample individual configurations (first few):")
-    for i in range(min(max_print, len(terms_list))):
-        d = terms_list[i]
-        print(f"[{i:02d}] E={d['E_total']:+.6f}  T={d['T']:+.6f}  V_en={d['V_en']:+.6f}  V_ee={d['V_ee']:+.6f}  V_nn={d['V_nn']:+.6f}  r12={d['r12']:.4f}")
-
-    return {
-        "acc": acc,
-        "T": T, "V_en": Ven, "V_ee": Vee, "V_nn": Vnn, "E_total": Etot
-    }
-R = 5
-rhos_test = np.array([1.4279984, 0.19608351, 0.50236534], dtype=float)
-
-x0_6d = np.array([0.5, 0.0, 0.0,  -0.5, 0.0, 0.0], dtype=float)
-
-diag = diagnose_energy_terms_at_R(
-    psi_h2=psi_h2,
-    logP_h2=logP_h2,
-    rhos=rhos_test,
-    bond_length=R,
-    x0_6d=x0_6d,
-    nsteps=30000,     # start moderate; you can increase later
-    stepsize=0.5,     # use your “good acceptance” step
-    nburn=3000,
-    h=1e-4,
-    seed=123
-)
 def grad_logpsi_h2(V, rhos, bond_length):
     rho1, rho2, rho3 = rhos
     q1, q2 = nuclear_positions(bond_length)
@@ -345,9 +266,9 @@ def estimate_energy_h2_fixed_rhos(psi_h2, logP_h2, rhos, x0, bond_length,
 
     E_mean = float(np.mean(E_samples))
     E_std  = float(np.std(E_samples, ddof=1))
-    E_sem  = float(E_std / np.sqrt(len(E_samples)))
+    E_sem_corr, tau_int, E_sem_naive, sE = sem_with_autocorr(E_samples, max_lag=200)
 
-    return E_mean, E_sem, float(acc), samples
+    return E_mean, E_sem_corr, float(acc), samples, tau_int, E_sem_naive
 
 def morse_potential(r, D, a, r0, E_single):
     return D * (1.0 - np.exp(-a * (r - r0)))**2 - D + 2.0 * E_single
@@ -365,9 +286,10 @@ def plot_binding_curve(results):
     plt.tight_layout()
     plt.show()
 
-def fit_morse(results, E_single=-0.5):
+def fit_morse(results, E_single=-0.500):
     R = np.array([d["R"] for d in results], dtype=float)
     E = np.array([d["E"] for d in results], dtype=float)
+    dE = np.array([d["E_sem"] for d in results], dtype=float)
 
     # initial guesses: r0 ~ 1.4, D ~ 0.17, a ~ 1
     p0 = np.array([0.17, 1.0, 1.4], dtype=float)
@@ -376,8 +298,10 @@ def fit_morse(results, E_single=-0.5):
         from scipy.optimize import curve_fit
         popt, pcov = curve_fit(
             lambda r, D, a, r0: morse_potential(r, D, a, r0, E_single),
-            R, E, p0=p0, maxfev=20000
-        )
+            R, E, p0=p0,
+            sigma = dE,
+            absolute_sigma = True,
+            maxfev=20000)
         perr = np.sqrt(np.diag(pcov))
     except Exception as e:
         print("curve_fit failed, reason:", e)
@@ -385,14 +309,17 @@ def fit_morse(results, E_single=-0.5):
 
     D, a, r0 = popt
     print(f"Morse fit: D={D:.5f}, a={a:.5f}, r0={r0:.5f}  (E_single={E_single:.5f})")
+    print(f"Fit errs:  dD={perr[0]:.5f}, da={perr[1]:.5f}, dr0={perr[2]:.5f}")
+
 
     # plot fit
     rgrid = np.linspace(R.min(), R.max(), 300)
     Efit = morse_potential(rgrid, D, a, r0, E_single)
 
     plt.figure(figsize=(6,4))
-    plt.plot(R, E, "o", label="VMC")
-    plt.plot(rgrid, Efit, "-", label="Morse fit")
+    #plt.plot(R, E, "o", label="VMC")
+    plt.plot(rgrid, Efit, "--", label="Morse fit", color='maroon')
+    plt.errorbar(R, E, yerr=dE, fmt="o", capsize=2, label ='VMC', color='k')
     plt.xlabel("Bond length R (a.u.)")
     plt.ylabel("Energy E(R)")
     plt.title("Morse fit to VMC binding curve")
@@ -441,8 +368,58 @@ def plot_density(samples, bond_length, bins=100, use_log=False):
     plt.tight_layout()
     plt.show()
 
+def autocorr_1d(x, max_lag=200):
+    """
+    Normalised autocorrelation function
+    """
+    x = np.asarray(x, dtype=float)
+    x = x - np.mean(x)
+    var = np.mean(x * x)
+    if var <= 0:
+        return np.ones(max_lag + 1)
+
+    ac = np.empty(max_lag + 1, dtype=float)
+    ac[0] = 1.0
+    n = len(x)
+    for lag in range(1, max_lag + 1):
+        ac[lag] = np.mean(x[:n - lag] * x[lag:]) / var
+    return ac
+
+def tau_int_geyer(ac):
+    """
+    Integrated autocorrelation time by sum autocorrelation until it first becomes negative.
+    """
+    tau = 0.5
+    for lag in range(1, len(ac)):
+        if ac[lag] <= 0:
+            break
+        tau += ac[lag]
+    return float(tau)
+
+def sem_with_autocorr(x, max_lag=200):
+    """
+    sem_corr = s * sqrt(2*tau_int/N)
+    """
+    x = np.asarray(x, dtype=float)
+    N = len(x)
+    s = float(np.std(x, ddof=1))
+    sem_naive = s / np.sqrt(N)
+
+    ac = autocorr_1d(x, max_lag=max_lag)
+    tau = tau_int_geyer(ac)
+    sem_corr = s * np.sqrt(2.0 * tau / N)
+    return float(sem_corr), float(tau), float(sem_naive), float(s)
 
 # Running all code
+
+def save_result(filename, R, E, E_err, rhos, acc, Tau, E_oldsem):
+    write_header = not os.path.exists(filename)
+
+    with open(filename, "a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(["R", "E", "E_err", "rho1", "rho2", "rho3", "acceptance", "Tau", "Old Errors"])
+        writer.writerow([R, E, E_err, rhos[0], rhos[1], rhos[2], acc, Tau, E_oldsem])
 
 def run_h2_bond_scan(
     bond_lengths,
@@ -454,7 +431,7 @@ def run_h2_bond_scan(
     opt_nburn=6000,
     h=1e-4,
     lr=0.02,
-    opt_max_iter=70,
+    opt_max_iter=80,
     # final energy estimate settings
     eval_nsteps=120000,
     eval_stepsize=0.5,
@@ -491,7 +468,7 @@ def run_h2_bond_scan(
         )
 
         # 2) energy estimate with rhos fixed (clean report value)
-        E_mean, E_sem, acc_eval, samples = estimate_energy_h2_fixed_rhos(
+        E_mean, E_sem, acc_eval, samples, Tau, E_oldsem = estimate_energy_h2_fixed_rhos(
             psi_h2, logP_h2, rhos_opt, x0_6d, R,
             nsteps=eval_nsteps, stepsize=eval_stepsize, nburn=eval_nburn,
             h=h, seed=seed + 2000*k
@@ -503,6 +480,17 @@ def run_h2_bond_scan(
         # 3) required density plot
         if make_density_plots:
             plot_density(samples, R, bins=100, use_log=False)
+        
+        save_result(
+                "h2_results.csv",
+                R,
+                E_mean,
+                E_sem,
+                rhos_opt,
+                acc_eval,
+                Tau,
+                E_oldsem
+            )
 
         results.append({
             "R": float(R),
@@ -517,29 +505,33 @@ def run_h2_bond_scan(
 
     return results
 
-"""
-x0_6d = np.array([0.5, 0.0, 0.0,   -0.5, 0.0, 0.0]) 
+
+x0_6d = np.array([0.5, 0.0, 0.0,   -0.5, 0.0, 0.0])
 rhos0 = np.array([1.0, 0.2, 0.5])
 bond_lengths = np.linspace(0.5, 3.0, 5)
-bond_length = 2
+bond_lengths1 = np.array([0.6, 0.9, 1.2, 1.4, 2, 4, 5])
 nsteps = 100000
 stepsize = 0.5
 nburn = 6000
 seed = 1234
 
+# results = run_h2_bond_scan(
+#         bond_lengths=bond_lengths,
+#         rhos_init=rhos0,
+#         x0_6d=x0_6d,
+#         opt_stepsize=0.5,
+#         eval_stepsize=0.5,
+#         make_density_plots=False
+#     )
 
-results = run_h2_bond_scan(
-        bond_lengths=bond_lengths,
-        rhos_init=rhos0,
-        x0_6d=x0_6d,
-        opt_stepsize=0.5,     # acceptance too low? keep < 1 for now
-        eval_stepsize=0.5,
-        make_density_plots=True
-    )
+df = pd.read_csv('h2_results_full.csv', header =0)
+fulldata = df.rename(columns={"E_err": "E_sem"}).to_dict(orient="records")
 
-plot_binding_curve(results)
-popt, perr = fit_morse(results, E_single=-0.5)
-"""
+plot_binding_curve(fulldata)
+popt, perr = fit_morse(fulldata, E_single=-0.5001179198681318)
+
+
+# Testing each section of VMC pipeline
 """
 x_samples, testing_rate = metropolis_3d(
     logP_h2, x0_6d, rhos0, bond_length,
